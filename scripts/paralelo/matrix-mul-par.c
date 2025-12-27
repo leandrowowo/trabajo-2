@@ -1,113 +1,113 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 #include <pthread.h>
-#include "mpi.h"
 
 #define SILENT 0
 #define VERBOSE 1
-#define MASTER 0
-#define TAG_SENDTASK 1
-#define TAG_TASKREADY 2
-#define TAG_FINISH 3
 
-MPI_Status status;
+// Variables globales
+float **A, **B, **C;
+int f, c1, c2; 
+
+// Estructura para pasar mensajes a los hilos
+struct Messages {
+    int id;             // ID del hilo
+    int start_index;    // Inicio índice
+    int end_index;      // Fin índice
+    int opmode;         // Modo de operación (VERBOSE/SILENT)   
+};
 
 /*
-    *** FUNCIONES ***
+*
 */
+void Usage(char *message)
+{
+    printf("Usage: %s k -O < datafile.txt\n\n", message);
+    printf("Where:\n");
+    printf("\tk: Number of threads\n");
+    printf("\tO in {V: Verbose; S: Silent}\n");
+}
 
-// readData: lee el archivo de entrada y llena las matrices A y B.
-//           Las matrices se llenan por filas
-void genData(int *f, int *c1, int *c2, float ***A, float ***B)
+/*
+*
+*/
+void genData()
 {
     int i, j;
 
-    scanf("%d", f);
-    scanf("%d", c1);
-    scanf("%d", c2);
+    scanf("%d", &f);
+    scanf("%d", &c1);
+    scanf("%d", &c2);
 
     // Inicialización de matriz A
-    *A = (float **) calloc(*f, sizeof(float *)); // Asignación de memoria para filas de A
-    for(i = 0; i < *f; i = i + 1)
+    A = (float **) calloc(f, sizeof(float *)); 
+    for(i = 0; i < f; i = i + 1)
     {
-        (*A)[i] = (float *) calloc(*c1, sizeof(float)); // Asignación de memoria para las columnas de A
+        A[i] = (float *) calloc(c1, sizeof(float)); 
+        for(j = 0; j < c1; j = j + 1) A[i][j] = 1.0;
     }
-
-    // Llenar matriz A
-    for(i = 0; i < *f; i = i + 1)
-    {
-        for(j = 0; j < *c1; j = j + 1)
-        {
-            (*A)[i][j] = 1.0;
-        }
-    }
-
 
     // Inicialización de matriz B
-    *B = (float **) calloc(*c1, sizeof(float *)); // Asignación de memoria para filas de B
-    for(i = 0; i < *c1; i = i + 1)
+    B = (float **) calloc(c1, sizeof(float *)); 
+    for(i = 0; i < c1; i = i + 1)
     {
-        (*B)[i] = (float *) calloc(*c2, sizeof(float)); // Asignación de memoria para las columnas de B
-    }
-
-    // Llenar matriz B
-    for(i = 0; i < *c1; i = i + 1)
-    {
-        for(j = 0; j < *c2; j = j + 1)
-        {
-            (*B)[i][j] = 2.0;
-        }
+        B[i] = (float *) calloc(c2, sizeof(float)); 
+        for(j = 0; j < c2; j = j + 1) B[i][j] = 2.0;
     }
 }
 
-// printMatrix: imprime en pantalla la matriz
-void printMatrix(float **A, int rows, int columns)
+/*
+*
+*/
+void printMatrix(float **Mat, int rows, int columns)
 {
     int i, j;
-
     for(i = 0; i < rows; i = i + 1)
     {
         for(j = 0; j < columns; j = j + 1)
         {
-            printf("%.1f\t", A[i][j]);
+            printf("%.1f\t", Mat[i][j]);
         }
         printf("\n");
     }
 }
 
-// freeMatrix: libera la memoria de la matriz
-void freeMatrix(float **A, int rows)
+/*
+*
+*/
+void freeMatrix(float **Mat, int rows)
 {
-    int i, j;
-
-    for(i = 0; i < rows; i = i + 1)
-    {
-        free(A[i]);
-    }
-
-    free(A);
+    int i;
+    for(i = 0; i < rows; i = i + 1) free(Mat[i]);
+    free(Mat);
 }
 
-// Process: multiplicación de matrices A y B
-float **Process(float **A, float **B, int f, int c1, int c2)
+/*
+*
+*/
+void *Process(void *p)
 {
-    float **C; // Matriz resultante de la multiplicación
+    struct Messages *data = (struct Messages *) p;
     int i, j, k;
 
-    // Inicialización de matriz C
-    C = (float **) calloc(f, sizeof(float *));
-    for(i = 0; i < f; i = i + 1)
+    // Si es VERBOSE, mostrar información del hilo
+    if (data->opmode == VERBOSE)
     {
-        C[i] = (float *) calloc(c2, sizeof(float));
+        printf("[Hilo %d] Procesando %d filas (Desde fila %d hasta fila %d)\n",
+               data->id, 
+               (data->end_index - data->start_index), 
+               data->start_index, 
+               data->end_index - 1);
     }
 
-    // Proceso de multiplicación
-    for(i = 0; i < f; i = i + 1)
+    // Multiplicación de matrices 
+    for(i = data->start_index; i < data->end_index; i = i + 1)
     {
         for(j = 0; j < c2; j = j + 1)
         {
             C[i][j] = 0;
-
             for(k = 0; k < c1; k = k + 1)
             {
                 C[i][j] = C[i][j] + (A[i][k] * B[k][j]);
@@ -115,15 +115,140 @@ float **Process(float **A, float **B, int f, int c1, int c2)
         }
     }
 
-    return C;
+    pthread_exit(NULL);
+}
+
+/*
+*
+*/
+void printData(int mode)
+{
+    if(mode == VERBOSE)
+    {
+        printf("Matrix A:\n");
+        printMatrix(A, f, c1);
+        printf("\nMatrix B:\n");
+        printMatrix(B, c1, c2);
+        printf("\nResultado multiplicación:\n");
+        printMatrix(C, f, c2);
+    }
+    else
+    {
+        printf("Dimensión matriz A: %dx%d\n", f, c1);
+        printf("Dimensión matriz B: %dx%d\n", c1, c2);
+    }
 }
 
 int main(int argc, char **argv)
 {
-    
-    
-    MPI_Init(&argc, &argv);
+    int n; 
+    int mode;
+    int i, t;
+    int k;
 
+    clock_t CPU_start, CPU_finish;
+    time_t Wall_start, Wall_finish;
+    float CPU_time;
+    long Wall_time;
+
+    pthread_t *thread;
+    pthread_attr_t attribute;
+    
+    struct Messages **mess;
+    void *exit_status;
+    int s, rem, l; 
+
+    if(argc != 3)
+    {
+        Usage(argv[0]);
+        return -1;
+    }
+
+    k = atoi(argv[1]);
+
+    if(strcmp(argv[2], "-V") == 0) mode = VERBOSE;
+    else mode = SILENT;
+    
+    scanf("%d", &n);
+    printf("\nNúmero de tareas: %d\n", n);
+
+    pthread_attr_init(&attribute);
+    pthread_attr_setdetachstate(&attribute, PTHREAD_CREATE_JOINABLE);
+    
+    thread = calloc(k, sizeof(pthread_t));
+    mess = calloc(k, sizeof(struct Messages *));
+    for (i = 0; i < k; i = i + 1)
+    {
+        mess[i] = calloc(1, sizeof(struct Messages));
+    }
+
+    CPU_start = clock();
+    Wall_start = time(NULL);
+
+    for(i = 0; i < n; i = i + 1)
+    {            
+        printf("\n----------------------------\n");
+        printf("Ejecutando tarea %d con %d hilos:", i+1, k);
+        printf("\n----------------------------\n");
+
+        genData();
+
+        C = (float **) calloc(f, sizeof(float *));
+        for(t = 0; t < f; t = t + 1)
+        {
+            C[t] = (float *) calloc(c2, sizeof(float));
+        }
+
+        s = f / k;
+        rem = f % k;
+        l = 0;                
+
+        for (t = 0; t < k; t = t + 1) 
+        {
+            int current_chunk_size;
+            if (rem > 0) {
+                current_chunk_size = s + 1;
+                rem = rem - 1;
+            } else {
+                current_chunk_size = s;
+            }
+
+            mess[t]->id = t;
+            mess[t]->opmode = mode;
+            mess[t]->start_index = l;                   
+            mess[t]->end_index = l + current_chunk_size; 
+            
+            l = l + current_chunk_size;
+
+            pthread_create(&thread[t], &attribute, Process, (void *) mess[t]);
+        }
+
+        for (t = 0; t < k; t = t + 1)
+        {
+            pthread_join(thread[t], &exit_status);
+        }
+
+        printData(mode);
+        printf("----------------------------\n");
+
+        freeMatrix(C, f);
+        freeMatrix(A, f);
+        freeMatrix(B, c1);
+    }
+
+    Wall_finish = time(NULL);
+    CPU_finish = clock();
+
+    CPU_time = (float)(CPU_finish - CPU_start)/CLOCKS_PER_SEC;
+    Wall_time = (long)(Wall_finish - Wall_start);
+
+    printf("\nCPU Time (segundos): %f\n", CPU_time);
+    printf("Tiempo total de ejecución (segundos): %ld\n", Wall_time);
+
+    pthread_attr_destroy(&attribute);
+    for(i = 0; i < k; i = i + 1) free(mess[i]);
+    free(mess);
+    free(thread);
 
     return 0;
 }

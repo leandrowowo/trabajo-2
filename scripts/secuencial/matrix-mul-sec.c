@@ -179,6 +179,8 @@ int main(int argc, char **argv)
             printf("----------------------------\n");
 
             freeMatrix(C, f);
+            freeMatrix(A, f);
+            freeMatrix(B, c1);
         }
 
         Wall_finish = time(NULL);
@@ -190,8 +192,7 @@ int main(int argc, char **argv)
         printf("\nCPU Time (segundos): %f\n", CPU_time);
         printf("Tiempo total de ejecución (segundos): %ld\n", Wall_time);
 
-        freeMatrix(A, f);
-        freeMatrix(B, c1);
+
     }
 
     return 0;
