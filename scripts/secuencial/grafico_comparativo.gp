@@ -4,7 +4,7 @@ set output 'grafica_mult_sec.png'
 
 # 2. Títulos y etiquetas
 set title "Gráfico rendimiento multiplicación de matrices (versión secuencial)"
-set xlabel "Dimensión (Tamaño de entrada)"
+set xlabel "Cantidad de tareas"
 set ylabel "Tiempo de ejecución total (segundos)"
 
 # 3. Configuración de Ejes y Logaritmos

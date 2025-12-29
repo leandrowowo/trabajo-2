@@ -102,7 +102,7 @@ float **Process(float **A, float **B, int f, int c1, int c2)
     {
         for(j = 0; j < c2; j = j + 1)
         {
-            C[i][j] = 0;
+            C[i][j] = 0.0;
 
             for(k = 0; k < c1; k = k + 1)
             {
