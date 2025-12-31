@@ -29,7 +29,6 @@
 #define VERBOSE 1
 
 // *** Constantes lógicas ***
-#define FALSE 0
 #define TRUE 1
 
 // *** Etiquetas para nodos ***
@@ -45,6 +44,23 @@
 int nodeID;
 MPI_Status status;
 
+/*
+    *** STRUCT ***
+*/
+struct Messages
+{
+    int id;             // ID del hilo
+    int start_index;    // Inicio índice
+    int end_index;      // Fin índice
+
+    int f;              // Dimensiones de matrices de entrada
+    int c1;
+    int c2;
+
+    float **A;          // Matrices a operar (Memoria comopartida)
+    float **B;
+    float **C;
+};
 
 /*
     *** FUNCIONES ***
@@ -52,7 +68,7 @@ MPI_Status status;
 
 void Usage(char *message)
 {
-    printf("Usage: mpirun -np P %s -O < datafile.txt\n\n", message);
+    printf("Usage: mpirun -np P %s k -O < datafile.txt\n\n", message);
     printf("Where: O in {V: Verbose; S: Silent}\n");
     printf("       P: cantidad de nodos");
 }
@@ -125,41 +141,35 @@ void freeMatrix(float **A, int rows)
 }
 
 // MatrixMult: multiplicación de matrices A y B
-float **MatrixMult(float **A, float **B, int f, int c1, int c2)
+void *MatrixMult(void *p)
 {
-    float **C; // Matriz resultante de la multiplicación
+    struct Messages *me;
     int i, j, k;
 
-    // Inicialización de matriz C
-    C = (float **) calloc(f, sizeof(float *));
-    for(i = 0; i < f; i = i + 1)
-    {
-        C[i] = (float *) calloc(c2, sizeof(float));
-    }
+    me = (struct Messages *) p;
 
-    // Proceso de multiplicación
-    for(i = 0; i < f; i = i + 1)
+    // Multiplicación de matrices 
+    for(i = me->start_index; i < me->end_index; i = i + 1)
     {
-        for(j = 0; j < c2; j = j + 1)
+        for(j = 0; j < me->c2; j = j + 1)
         {
-            C[i][j] = 0.0;
+            me->C[i][j] = 0.0;
 
-            for(k = 0; k < c1; k = k + 1)
+            for(k = 0; k < me->c1; k = k + 1)
             {
-                C[i][j] = C[i][j] + (A[i][k] * B[k][j]);
+                me->C[i][j] = me->C[i][j] + (me->A[i][k] * me->B[k][j]);
             }
         }
     }
 
-    return C;
+    pthread_exit(NULL);
 }
 
 // Process: función que se encarga de establecer la comunicación y tareas entre nodo maestro y nodos trabajadores
-void Process(int n_node, int n_task)
+void Process(int mode, int n_node, int n_task, int n_thread)
 {
     int tasks_sent; // Número de tareas enviadas a los nodos trabajadores
     int workers_active; // Número de tabajadores activos
-    int ready;
 
     float **A, **B, **C_Send; // Matrices A y B a multiplicar. Matriz C resultante de la multiplicación
     int f, c1, c2; // Dimensiones de matrices de entrada
@@ -168,12 +178,27 @@ void Process(int n_node, int n_task)
     int f_Recv, c_Recv; // Número de filas y columnas, respectivamente, que recibe el maestro
     float **C_Recv; // Matriz C que arma el maestro a medida que recibe las filas que envía el trabajador
 
-    int i;
+    clock_t CPU_start, CPU_finish;
+    time_t Wall_start, Wall_finish;
+    float CPU_time;
+    long Wall_time;
+
+    pthread_t *threads;
+    pthread_attr_t attribute;
+    
+    struct Messages **mess;
+    void *exit_status;
+    int chunk_size, remainder, index, current_chunk;
+
+    int i, t;
 
     if(nodeID == MASTER) // Nodo maestro
     {
         tasks_sent = 0;
         workers_active = 0;
+
+        CPU_start = clock();
+        Wall_start = time(NULL);
 
         // Reparto de las tareas entre los trabajadores
         for(i = 1; i < n_node; i = i + 1)
@@ -181,30 +206,22 @@ void Process(int n_node, int n_task)
             printf("\nMaestro: Asignando tarea %d\n", i);
             if(tasks_sent < n_task)
             {
-                printf("\nMaestro: Leyendo dimensiones\n");
                 scanf("%d %d %d", &dimensiones[0], &dimensiones[1], &dimensiones[2]);
 
-                printf("\nMaestro: Enviando dimensiones de A y B a tabajadores\n");
                 MPI_Send(&dimensiones, 3, MPI_INT, i, TAG_SENDTASK, MPI_COMM_WORLD); // Envío de las dimensiones de las matrices a los nodos trabajadores
-                printf("\nMaestro: Dimensiones enviadas\n");
                 tasks_sent = tasks_sent + 1;
                 workers_active = workers_active + 1;
             }
             else
             {
-                printf("\nMaestro: Apagando nodo trabajador\n");
                 MPI_Send(NULL, 0, MPI_INT, i, TAG_FINISH, MPI_COMM_WORLD); // Si no hay más tareas por asignar, se apagan los nodos que no tienen tareas
-                printf("\nMaestro: Nodo trabajador apagado\n");
             }
         }
-
 
         // En caso de que queden tareas por asignar, se le asigna una a un nodo que se haya desocupado
         while(workers_active > 0)
         {
-            printf("\nMaestro: Recibiendo dimensiones de matriz C resultante\n");
             MPI_Recv(&dim, 2, MPI_INT, MPI_ANY_SOURCE, TAG_SENDDIM, MPI_COMM_WORLD, &status); // El maestro recibe las dimensiones del matriz C
-            printf("\nMaestro: Dimensiones recibidas\n");
             f_Recv = dim[0];
             c_Recv = dim[1];
 
@@ -218,85 +235,144 @@ void Process(int n_node, int n_task)
             // Maestro recibe filas de C del trabajador
             for(i = 0; i < f_Recv; i = i + 1)
             {
-                printf("\nMaestro: Recibiendo fila %d de matriz C\n", i);
                 MPI_Recv(C_Recv[i], c_Recv, MPI_FLOAT, status.MPI_SOURCE, TAG_SENDROW, MPI_COMM_WORLD, &status);
-                printf("\nMaestro: Fila %d de matriz C recibida\n", i);
             }
 
-            printf("\nMaestro: Mostrando matriz resultante\n");
-            printMatrix(C_Recv, f_Recv, c_Recv);
+            if(mode == VERBOSE)
+            {
+                printf("\nMaestro: Mostrando matrices\n");
+                printf("\nMatriz A:\n");
+                printMatrix(A, f, c1);
+                printf("\nMatriz B:\n");
+                printMatrix(B, c1, c2);
+                printf("\nMatriz C resultante:\n");
+                printMatrix(C_Recv, f_Recv, c_Recv);
+            }
 
-            printf("\nMaestro: Liberando memoria de matriz C\n");
             freeMatrix(C_Recv, f_Recv);
-            printf("\nMaestro: Memoria de matriz C liberada\n");
 
             if(tasks_sent < n_task)
             {
-                printf("\nMaestro: Asignando tareas restantes\n");
-                printf("\nMaestro: Leyendo dimensiones\n");
                 scanf("%d %d %d", &dimensiones[0], &dimensiones[1], &dimensiones[2]);
 
-                printf("\nMaestro: Enviando dimensiones a tabajadores\n");
                 MPI_Send(&dimensiones, 3, MPI_INT, status.MPI_SOURCE, TAG_SENDTASK, MPI_COMM_WORLD); // Si quedan tareas por asignar, se le asigna al mismo nodo que se desocupó
-                printf("\nMaestro: Dimensiones enviadas\n");
                 tasks_sent = tasks_sent + 1;
             }
             else
             {
-                printf("\nMaestro: Apagando nodo trabajador\n");
                 MPI_Send(NULL, 0, MPI_INT, status.MPI_SOURCE, TAG_FINISH, MPI_COMM_WORLD); // Si hay nodos sin tareas asignadas, se apagan
-                printf("\nMaestro: Nodo trabajador apagado\n");
                 workers_active = workers_active - 1;
             }
+        }
+
+        Wall_finish = time(NULL);
+        CPU_finish = clock();
+
+        CPU_time = (float)((CPU_finish - CPU_start)/CLOCKS_PER_SEC);
+        Wall_time = (long)(Wall_finish - Wall_start);
+
+        if(mode == SILENT)
+        {
+            printf("\n\n-------------------------\n");
+            printf("Cantidad de nodos: %d\n", n_node);
+            printf("Tiempo de ejecución total (Wall-time): %ld\n", Wall_time);
+            printf("-------------------------\n");
         }
     }
     else // Nodo trabajador
     {
         while(TRUE)
         {
-            printf("\nTrabajador: Recibiendo dimensiones de matrices A y B\n");
             MPI_Recv(&dimensiones, 3, MPI_INT, MASTER, MPI_ANY_TAG, MPI_COMM_WORLD, &status); // El nodo trabajador recibe las dimensiones del maestro
-            printf("\nTrabajador: Dimensiones recibidas\n");
 
             if(status.MPI_TAG == TAG_FINISH) 
             {
-                printf("\nTrabajador: Tarea terminada\n");
                 break; // Si el nodo terminó la tarea, se libera
             }
             else if(status.MPI_TAG == TAG_SENDTASK) // Si se le asigna una tarea, realiza el cálculo de la multiplicación
             {
-                printf("\nTrabajador: Tarea asignada\n");
                 f = dimensiones[0];
                 c1 = dimensiones[1];
                 c2 = dimensiones[2];
 
                 genData(f, c1, c2, &A, &B);
 
-                printf("\nTrabajador: Calculando multiplicación\n");
-                C_Send = MatrixMult(A, B, f, c1, c2);
-                printf("\nTrabajador: Multiplicación lista\n");
+                C_Send = (float **) calloc(f, sizeof(float *));
+                for(i = 0; i < f; i = i + 1)
+                {
+                    C_Send[i] = (float *) calloc(c2, sizeof(float));
+                }
 
+                // Cálculo de multiplicación de matrices con memoria compartida
+
+                chunk_size = f / n_thread;
+                remainder = f % n_thread;
+                index = 0;
+
+                threads = calloc(n_thread, sizeof(pthread_t*));
+                mess = calloc(n_thread, sizeof(struct Messages *));
+                for(i = 0; i < n_thread; i = i + 1)
+                {
+                    mess[i] = calloc(1, sizeof(struct Messages));
+                }
+
+                pthread_attr_init(&attribute);
+                pthread_attr_setdetachstate(&attribute, PTHREAD_CREATE_JOINABLE);
+
+                for(t = 0; t < n_thread; t = t + 1)
+                {
+                    mess[t]->id = t;
+
+                    if(remainder != 0)
+                    {
+                        current_chunk = chunk_size + 1;
+                        remainder = remainder - 1;
+                    }
+                    else
+                    {
+                        current_chunk = chunk_size;
+                    }
+
+                    mess[t]->f = f;
+                    mess[t]->c1 = c1;
+                    mess[t]->c2 = c2;
+                    mess[t]->A = A;
+                    mess[t]->B = B;
+                    mess[t]->C = C_Send;
+                    mess[t]->start_index = index;
+                    mess[t]->end_index = index + current_chunk;
+
+                    index = index + current_chunk;
+
+                    pthread_create(&threads[t], &attribute, MatrixMult, (void *)mess[t]);
+                }
+
+                for(t = 0; t < n_thread; t = t + 1)
+                {
+                    pthread_join(threads[t], &exit_status);
+                    free(mess[t]);
+                }
+
+                free(threads);
+                free(mess);
+                pthread_attr_destroy(&attribute);
+                
                 dim[0] = f;
                 dim[1] = c2;
 
                 // Envío de las dimensiones de matriz C al maestro
-                printf("\nTrabajador: Enviando dimensiones de C al maestro\n");
                 MPI_Send(&dim, 2, MPI_INT, MASTER, TAG_SENDDIM, MPI_COMM_WORLD);
 
                 // Envío de las filas de matriz C al maestro
                 for(i = 0; i < f; i = i + 1)
                 {
-                    printf("\nTrabajador: Enviando fila %d de matriz C resultante\n");
                     MPI_Send(C_Send[i], c2, MPI_FLOAT, MASTER, TAG_SENDROW, MPI_COMM_WORLD); // Manda mensaje al maestro que terminó la tarea
-                    printf("\nTrabajador: Fila %d de matriz C enviada\n"); 
                 }
                            
                 // Liberación de memoria de las matrices
-                printf("\nTrabajador: Liberando memoria de matrices A, B y C\n");
                 freeMatrix(A, f);
                 freeMatrix(B, c1);
                 freeMatrix(C_Send, f);
-                printf("\nTrabajador: Memoria liberada\n");
             }
         }
     }
@@ -304,8 +380,8 @@ void Process(int n_node, int n_task)
 
 int main(int argc, char **argv)
 {
-    int n_task, n_nodes;
-    int me;
+    int n_task, n_nodes, n_threads;
+    int me, mode;
     char processor_name[MPI_MAX_PROCESSOR_NAME];
 
     n_task = 0;
@@ -315,16 +391,33 @@ int main(int argc, char **argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &nodeID);
     MPI_Get_processor_name(processor_name, &me);
 
-    printf("\n\nProcess [%d] Alive on %s\n", nodeID, processor_name);
-    fflush(stdout);
+    if(argc != 3 || (strcmp(argv[2], "-V") && strcmp(argv[2], "-S")))
+    {
+        Usage(argv[0]);
+        MPI_Finalize();
+        exit(EXIT_FAILURE);
+    }
+    else
+    {
+        if(strcmp(argv[2], "-V") == 0)
+        {
+            mode = VERBOSE;
+        }
+        else if(strcmp(argv[2], "-S") == 0)
+        {
+            mode = SILENT;
+        }
+
+        n_threads = atoi(argv[1]);
+    }
 
     if(nodeID == MASTER)
     {
         scanf("%d", &n_task);
-        printf("Maestro: Se detectaron %d tareas en el archivo\n", n_task);
+        printf("\nMaestro: Se detectaron %d tareas en el archivo\n", n_task);
     }
 
-    Process(n_nodes, n_task);
+    Process(mode, n_nodes, n_task, n_threads);
 
     MPI_Finalize();
 
