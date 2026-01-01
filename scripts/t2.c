@@ -36,10 +36,9 @@
 
 // *** Etiquetas para tareas *** 
 #define TAG_SENDTASK 1  // Etiqueta para mandar tareas a los nodos trabajadores
-#define TAG_TASKREADY 2  // Etiqueta para mandar al master que la tarea se finalizó
-#define TAG_FINISH 3  // Etiqueta para que el maestro le diga al trabajador que se apague si no tiene más tareas que asignar
-#define TAG_SENDDIM 4 // Etiqueta para que el trabajador le mande al maestro las dimensiones de la matrixz C
-#define TAG_SENDROW 5 // Etiqueta para que el trabajador le mande al maestro la fila de C correspondiente
+#define TAG_FINISH 2  // Etiqueta para que el maestro le diga al trabajador que se apague si no tiene más tareas que asignar
+#define TAG_SENDDIM 3 // Etiqueta para que el trabajador le mande al maestro las dimensiones de la matrixz C
+#define TAG_SENDROW 4 // Etiqueta para que el trabajador le mande al maestro la fila de C correspondiente
 
 int nodeID;
 MPI_Status status;
