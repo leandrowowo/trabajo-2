@@ -57,7 +57,7 @@ struct Messages
     int c1;
     int c2;
 
-    float **A;          // Matrices a operar (Memoria comopartida)
+    float **A;          // Matrices a operar (Memoria compartida)
     float **B;
     float **C;
 };
@@ -165,7 +165,7 @@ void *MatrixMult(void *p)
     pthread_exit(NULL);
 }
 
-// Process: función que se encarga de establecer la comunicación y tareas entre nodo maestro y nodos trabajadores
+// Process: función que se encarga de establecer la comunicación y tareas entre nodo maestro y nodos trabajadores,
 void Process(int mode, int n_node, int n_task, int n_thread)
 {
     int tasks_sent; // Número de tareas enviadas a los nodos trabajadores
@@ -173,8 +173,8 @@ void Process(int mode, int n_node, int n_task, int n_thread)
 
     float **A, **B, **C_Send; // Matrices A y B a multiplicar. Matriz C resultante de la multiplicación
     int f, c1, c2; // Dimensiones de matrices de entrada
-    int dimensiones[3]; // Arreglo con las dimensiones
-    int dim[2]; // Dimensiones de matriz C que recibe el maestro
+    int dim_Send[3]; // Arreglo con las dimensiones de matrices A y B que manda el maestro al trabajador
+    int dim_Recv[2]; // Dimensiones de matriz C que recibe el maestro
     int f_Recv, c_Recv; // Número de filas y columnas, respectivamente, que recibe el maestro
     float **C_Recv; // Matriz C que arma el maestro a medida que recibe las filas que envía el trabajador
 
@@ -200,15 +200,17 @@ void Process(int mode, int n_node, int n_task, int n_thread)
         CPU_start = clock();
         Wall_start = time(NULL);
 
-        // Reparto de las tareas entre los trabajadores
+        /*
+            *** Master: Asignación de tareas a nodos trabajadores
+        */
         for(i = 1; i < n_node; i = i + 1)
         {
             printf("\nMaestro: Asignando tarea %d\n", i);
             if(tasks_sent < n_task)
             {
-                scanf("%d %d %d", &dimensiones[0], &dimensiones[1], &dimensiones[2]);
+                scanf("%d %d %d", &dim_Send[0], &dim_Send[1], &dim_Send[2]);
 
-                MPI_Send(&dimensiones, 3, MPI_INT, i, TAG_SENDTASK, MPI_COMM_WORLD); // Envío de las dimensiones de las matrices a los nodos trabajadores
+                MPI_Send(&dim_Send, 3, MPI_INT, i, TAG_SENDTASK, MPI_COMM_WORLD); // Envío de las dimensiones de las matrices a los nodos trabajadores
                 tasks_sent = tasks_sent + 1;
                 workers_active = workers_active + 1;
             }
@@ -221,9 +223,9 @@ void Process(int mode, int n_node, int n_task, int n_thread)
         // En caso de que queden tareas por asignar, se le asigna una a un nodo que se haya desocupado
         while(workers_active > 0)
         {
-            MPI_Recv(&dim, 2, MPI_INT, MPI_ANY_SOURCE, TAG_SENDDIM, MPI_COMM_WORLD, &status); // El maestro recibe las dimensiones del matriz C
-            f_Recv = dim[0];
-            c_Recv = dim[1];
+            MPI_Recv(&dim_Recv, 2, MPI_INT, MPI_ANY_SOURCE, TAG_SENDDIM, MPI_COMM_WORLD, &status); // El maestro recibe del trabajador las dimensiones de matriz C
+            f_Recv = dim_Recv[0];
+            c_Recv = dim_Recv[1];
 
             // Asiganción de memoria para matriz C del maestro
             C_Recv = (float **) calloc(f_Recv, sizeof(float *));
@@ -253,9 +255,9 @@ void Process(int mode, int n_node, int n_task, int n_thread)
 
             if(tasks_sent < n_task)
             {
-                scanf("%d %d %d", &dimensiones[0], &dimensiones[1], &dimensiones[2]);
+                scanf("%d %d %d", &dim_Send[0], &dim_Send[1], &dim_Send[2]);
 
-                MPI_Send(&dimensiones, 3, MPI_INT, status.MPI_SOURCE, TAG_SENDTASK, MPI_COMM_WORLD); // Si quedan tareas por asignar, se le asigna al mismo nodo que se desocupó
+                MPI_Send(&dim_Send, 3, MPI_INT, status.MPI_SOURCE, TAG_SENDTASK, MPI_COMM_WORLD); // Si quedan tareas por asignar, se le asigna al mismo nodo que se desocupó
                 tasks_sent = tasks_sent + 1;
             }
             else
@@ -283,7 +285,7 @@ void Process(int mode, int n_node, int n_task, int n_thread)
     {
         while(TRUE)
         {
-            MPI_Recv(&dimensiones, 3, MPI_INT, MASTER, MPI_ANY_TAG, MPI_COMM_WORLD, &status); // El nodo trabajador recibe las dimensiones del maestro
+            MPI_Recv(&dim_Send, 3, MPI_INT, MASTER, MPI_ANY_TAG, MPI_COMM_WORLD, &status); // El nodo trabajador recibe las dimensiones del maestro
 
             if(status.MPI_TAG == TAG_FINISH) 
             {
@@ -291,24 +293,30 @@ void Process(int mode, int n_node, int n_task, int n_thread)
             }
             else if(status.MPI_TAG == TAG_SENDTASK) // Si se le asigna una tarea, realiza el cálculo de la multiplicación
             {
-                f = dimensiones[0];
-                c1 = dimensiones[1];
-                c2 = dimensiones[2];
+                // Asignación de dimensiones
+                f = dim_Send[0];
+                c1 = dim_Send[1];
+                c2 = dim_Send[2];
 
                 genData(f, c1, c2, &A, &B);
 
+                // Asignación de memoria de matriz C para enviar al maestro
                 C_Send = (float **) calloc(f, sizeof(float *));
                 for(i = 0; i < f; i = i + 1)
                 {
                     C_Send[i] = (float *) calloc(c2, sizeof(float));
                 }
 
-                // Cálculo de multiplicación de matrices con memoria compartida
+                /*
+                    *** Cálculo de multiplicación de matrices con memoria compartida ***
+                */
 
+                // Cálculo de tamaños de chunks de cada hilo 
                 chunk_size = f / n_thread;
                 remainder = f % n_thread;
                 index = 0;
 
+                // Asignación de memoria para hilos
                 threads = calloc(n_thread, sizeof(pthread_t*));
                 mess = calloc(n_thread, sizeof(struct Messages *));
                 for(i = 0; i < n_thread; i = i + 1)
@@ -333,6 +341,7 @@ void Process(int mode, int n_node, int n_task, int n_thread)
                         current_chunk = chunk_size;
                     }
 
+                    // Asignación de variables a cada hilo
                     mess[t]->f = f;
                     mess[t]->c1 = c1;
                     mess[t]->c2 = c2;
@@ -357,11 +366,15 @@ void Process(int mode, int n_node, int n_task, int n_thread)
                 free(mess);
                 pthread_attr_destroy(&attribute);
                 
-                dim[0] = f;
-                dim[1] = c2;
+                /*
+                    *** Proceso de envío de matriz C resultante al maestro ***
+                */
+
+                dim_Recv[0] = f;
+                dim_Recv[1] = c2;
 
                 // Envío de las dimensiones de matriz C al maestro
-                MPI_Send(&dim, 2, MPI_INT, MASTER, TAG_SENDDIM, MPI_COMM_WORLD);
+                MPI_Send(&dim_Recv, 2, MPI_INT, MASTER, TAG_SENDDIM, MPI_COMM_WORLD);
 
                 // Envío de las filas de matriz C al maestro
                 for(i = 0; i < f; i = i + 1)
